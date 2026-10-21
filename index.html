@@ -882,7 +882,7 @@ var hopcroft = (function() {
 <script>
 var db = (function() {
   'use strict';
-  var DB_PATH = 'https://cdn.jsdelivr.net/gh/greenwoodad/nmrshiftsearch@main/DBs/';
+  var DB_PATH = 'https://greenwoodad.github.io/nmrshiftsearch/DBs/';
   var SHARD_RULES = {
     '1H_CDCl3':  [{suffix:'_part1',min:-Infinity,max:5.0},{suffix:'_part2',min:5.0,max:Infinity}],
     '1H_all':    [{suffix:'_part1',min:-Infinity,max:5.0},{suffix:'_part2',min:5.0,max:Infinity}],
@@ -1122,9 +1122,20 @@ var results = (function() {
 
   function renderResults(r){results.render(r,resultsContainer,{includeDbs:getDbFilterSet(),showStructures:showStructures.checked,structureSize:150});}
 
+  showProgress(true); setProgress(0.05, 'Loading SQL engine\u2026');
   db.init({locateFile:function(f){return'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/'+f;}})
-    .then(function(){sqlReady=true;console.log('SQL + dict shards ready.');})
-    .catch(function(e){showError('Failed to initialise SQL engine: '+e.message);});
+    .then(function(){
+      sqlReady=true;
+      setProgress(1,'Ready.');
+      setTimeout(function(){showProgress(false);},800);
+      console.log('SQL + dict shards ready.');
+    })
+    .catch(function(e){
+      showProgress(false);
+      showError('Failed to initialise SQL engine: '+e.message+
+        ' \u2014 Check browser console (F12) for details.');
+      console.error('db.init failed:',e);
+    });
 
   (function poll(){
     var deadline=Date.now()+15000,id=setInterval(function(){
