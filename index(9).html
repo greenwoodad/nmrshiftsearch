@@ -1,0 +1,2020 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nmrshiftsearch</title>
+
+  <!-- RDKit.js (structure rendering) — loaded async, app works without it -->
+  <script>
+    window.initRDKitModule = undefined; // set by RDKit loader below
+  </script>
+  <script async src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"
+          onload="window._rdkitScriptLoaded = true;"></script>
+
+  <!-- sql.js (SQLite in WASM) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --uc-red:      #e00122;
+      --uc-black:    #000000;
+      --uc-gray-1:   #1a1a1a;
+      --uc-gray-2:   #333333;
+      --uc-gray-3:   #555555;
+      --uc-gray-4:   #888888;
+      --uc-gray-5:   #cccccc;
+      --uc-gray-6:   #e8e8e8;
+      --uc-gray-7:   #f5f5f5;
+      --uc-white:    #ffffff;
+
+      --badge-np:      #1a6b3c;
+      --badge-impur:   #7b3f00;
+      --badge-nmrbank: #1a3a6b;
+      --badge-nmrexp:  #5a1a6b;
+
+      --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono: 'Consolas', 'Courier New', monospace;
+
+      --radius:   6px;
+      --shadow:   0 2px 8px rgba(0,0,0,0.12);
+      --shadow-lg:0 4px 20px rgba(0,0,0,0.18);
+    }
+
+    html, body {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      background: var(--uc-gray-7);
+      color: var(--uc-gray-1);
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    a { color: var(--uc-red); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    header {
+      background: var(--uc-black);
+      color: var(--uc-white);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1.2rem;
+      height: 56px;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    header .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      text-decoration: none;
+    }
+
+    header .logo-mark {
+      width: 32px;
+      height: 32px;
+      background: var(--uc-red);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 14px;
+      color: var(--uc-white);
+      flex-shrink: 0;
+    }
+
+    header .app-name {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--uc-white);
+      letter-spacing: 0.01em;
+    }
+
+    header .app-subtitle {
+      font-size: 0.8rem;
+      color: var(--uc-gray-5);
+      font-weight: 400;
+    }
+
+    header nav {
+      margin-left: auto;
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    header nav a {
+      color: var(--uc-gray-5);
+      font-size: 0.85rem;
+      transition: color 0.15s;
+    }
+
+    header nav a:hover { color: var(--uc-white); text-decoration: none; }
+
+    /* ── Layout ───────────────────────────────────────────────────────────── */
+    .app-layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      height: calc(100vh - 56px);
+    }
+
+    /* ── Sidebar ──────────────────────────────────────────────────────────── */
+    .sidebar {
+      background: var(--uc-white);
+      border-right: 1px solid var(--uc-gray-5);
+      padding: 1.5rem 1.25rem;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      height: calc(100vh - 56px);
+      min-height: 0;
+    }
+
+    /* Keep sidebar sections at their natural height so the sidebar itself scrolls.
+       Without this, flex-shrink can compress panels and clip their contents. */
+    .sidebar > * {
+      flex-shrink: 0;
+    }
+
+    .peak-input-actions {
+      display: flex !important;
+      gap: 0.5rem;
+      margin-top: 0.4rem;
+      visibility: visible !important;
+    }
+
+    .panel {
+      background: var(--uc-white);
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      background: var(--uc-gray-6);
+      padding: 0.5rem 0.85rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--uc-gray-3);
+      border-bottom: 1px solid var(--uc-gray-5);
+    }
+
+    .panel-body {
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    /* ── Form controls ────────────────────────────────────────────────────── */
+    label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--uc-gray-2);
+      margin-bottom: 0.3rem;
+    }
+
+    select, input[type="number"], input[type="text"] {
+      width: 100%;
+      padding: 0.45rem 0.65rem;
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      font-size: 0.88rem;
+      font-family: var(--font-sans);
+      background: var(--uc-white);
+      color: var(--uc-gray-1);
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: auto;
+    }
+
+    select:focus, input:focus {
+      outline: none;
+      border-color: var(--uc-red);
+      box-shadow: 0 0 0 3px rgba(224,1,34,0.12);
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.6rem;
+    }
+
+    .form-group { display: flex; flex-direction: column; }
+
+    /* Tolerance row: label + override input */
+    .tol-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tol-row label { margin: 0; white-space: nowrap; flex: 0 0 auto; }
+    .tol-row input { flex: 1; }
+
+    /* ── Peak input area ──────────────────────────────────────────────────── */
+    .peak-input-wrap {
+      position: relative;
+    }
+
+    textarea#peakInput {
+      width: 100%;
+      min-height: 140px;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      resize: vertical;
+      background: var(--uc-gray-7);
+      color: var(--uc-gray-1);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    textarea#peakInput:focus {
+      outline: none;
+      border-color: var(--uc-red);
+      box-shadow: 0 0 0 3px rgba(224,1,34,0.12);
+      background: var(--uc-white);
+    }
+
+    .btn-file-upload {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 32px;
+      padding: 0 0.6rem;
+      background: var(--uc-gray-6);
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      font-size: 0.8rem;
+      cursor: pointer;
+      color: var(--uc-gray-2);
+      text-align: center;
+      transition: background 0.15s;
+      box-sizing: border-box;
+      line-height: 1;
+    }
+
+    .btn-file-upload:hover { background: var(--uc-gray-5); }
+
+    #fileInput { display: none; }
+
+    .parsed-preview {
+      font-size: 0.75rem;
+      color: var(--uc-gray-4);
+      margin-top: 0.3rem;
+      min-height: 1.2em;
+    }
+
+    .parsed-preview.ok  { color: #1a6b3c; }
+    .parsed-preview.err { color: var(--uc-red); }
+
+    /* ── DB filter checkboxes ─────────────────────────────────────────────── */
+    .db-filter-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem 0.8rem;
+    }
+
+    .db-filter-grid label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-weight: 400;
+      font-size: 0.85rem;
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .db-filter-grid input[type="checkbox"] {
+      width: auto;
+      accent-color: var(--uc-red);
+      cursor: pointer;
+    }
+
+    /* ── Search button ────────────────────────────────────────────────────── */
+    #searchBtn {
+      width: 100%;
+      padding: 0.7rem 1rem;
+      background: var(--uc-red);
+      color: var(--uc-white);
+      border: none;
+      border-radius: var(--radius);
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: background 0.15s, transform 0.1s;
+      box-shadow: var(--shadow);
+    }
+
+    #searchBtn:hover:not(:disabled) { background: #b80019; }
+    #searchBtn:active:not(:disabled) { transform: scale(0.98); }
+    #searchBtn:disabled { background: var(--uc-gray-4); cursor: not-allowed; }
+
+    /* ── Main content ─────────────────────────────────────────────────────── */
+    .main-content {
+      padding: 1.5rem 2rem 340px;
+      overflow-y: auto;
+      height: calc(100vh - 56px);
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ── Progress ─────────────────────────────────────────────────────────── */
+    #progressWrap {
+      display: none;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    #progressWrap.visible { display: flex; }
+
+    progress#progressBar {
+      width: 100%;
+      height: 8px;
+      appearance: none;
+      border: none;
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--uc-gray-5);
+    }
+
+    progress#progressBar::-webkit-progress-bar   { background: var(--uc-gray-5); border-radius: 4px; }
+    progress#progressBar::-webkit-progress-value { background: var(--uc-red);    border-radius: 4px; transition: width 0.2s; }
+    progress#progressBar::-moz-progress-bar      { background: var(--uc-red);    border-radius: 4px; }
+
+    #progressLabel {
+      font-size: 0.82rem;
+      color: var(--uc-gray-4);
+    }
+
+    /* ── Error banner ─────────────────────────────────────────────────────── */
+    #errorBanner {
+      display: none;
+      background: #fff0f0;
+      border: 1px solid #f5c0c0;
+      border-radius: var(--radius);
+      padding: 0.75rem 1rem;
+      color: #8b0000;
+      font-size: 0.88rem;
+    }
+
+    #errorBanner.visible { display: block; }
+
+    /* ── Results area ─────────────────────────────────────────────────────── */
+    #resultsContainer { flex: 1; }
+
+    /* Welcome / placeholder */
+    .welcome-card {
+      background: var(--uc-white);
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      padding: 2.5rem 2rem;
+      text-align: center;
+      color: var(--uc-gray-4);
+    }
+
+    .welcome-card h2 {
+      font-size: 1.3rem;
+      color: var(--uc-gray-2);
+      margin-bottom: 0.6rem;
+    }
+
+    .welcome-card p {
+      font-size: 0.9rem;
+      max-width: 480px;
+      margin: 0 auto 0.5rem;
+    }
+
+    .welcome-db-links {
+      margin-top: 0.9rem;
+      font-size: 0.82rem;
+      color: var(--uc-gray-4);
+    }
+    .welcome-db-links a {
+      color: var(--uc-red);
+      text-decoration: none;
+    }
+    .welcome-db-links a:hover { text-decoration: underline; }
+    .welcome-db-links .sep { margin: 0 0.4rem; color: var(--uc-gray-5); }
+
+    .welcome-nuclei {
+      margin-top: 1rem;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.3rem 1.5rem;
+      max-width: 340px;
+      margin-left: auto;
+      margin-right: auto;
+      font-size: 0.82rem;
+      color: var(--uc-gray-3);
+      text-align: left;
+    }
+    .welcome-nuclei .nuc-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .welcome-nuclei .nuc-label {
+      font-weight: 700;
+      color: var(--uc-gray-2);
+    }
+    .welcome-nuclei .nuc-count {
+      color: var(--uc-gray-4);
+    }
+
+    /* Results summary line */
+    .results-summary {
+      font-size: 0.85rem;
+      color: var(--uc-gray-4);
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--uc-gray-6);
+    }
+
+    /* ── Results table ────────────────────────────────────────────────────── */
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      background: var(--uc-white);
+      border: 1px solid var(--uc-gray-5);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .results-table thead th {
+      background: var(--uc-gray-1);
+      color: var(--uc-white);
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .results-table td {
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--uc-gray-6);
+      vertical-align: middle;
+    }
+
+    .results-table tr.row-even td { background: var(--uc-white); }
+    .results-table tr.row-odd  td { background: var(--uc-gray-7); }
+
+    .results-table tr:last-child td { border-bottom: none; }
+
+    .results-table tr:hover td { background: #fff5f5; }
+
+    /* Rank column */
+    .results-table td:first-child {
+      font-weight: 700;
+      color: var(--uc-gray-4);
+      text-align: center;
+      width: 2.5rem;
+    }
+
+    /* HK ratio column — highlight high values */
+    .ratio-high  { color: #1a6b3c; font-weight: 700; }
+    .ratio-med   { color: #7b5a00; font-weight: 600; }
+    .ratio-low   { color: var(--uc-gray-3); }
+
+    /* Structure thumbnail cell */
+    .results-table td.struct-cell {
+      padding: 0.3rem 0.5rem;
+      width: 160px;
+      text-align: center;
+    }
+
+    .results-table td.struct-cell img {
+      display: block;
+      margin: 0 auto;
+      border-radius: 4px;
+      background: var(--uc-white);
+    }
+
+    .no-structure {
+      color: var(--uc-gray-4);
+      font-size: 0.75rem;
+      font-style: italic;
+    }
+
+    /* ── Source badges ────────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 12px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--uc-white);
+      white-space: nowrap;
+    }
+
+    .badge-np      { background: var(--badge-np); }
+    .badge-impur   { background: var(--badge-impur); }
+    .badge-nmrbank { background: var(--badge-nmrbank); }
+    .badge-nmrexp  { background: var(--badge-nmrexp); }
+
+    /* ── Download row ─────────────────────────────────────────────────────── */
+    .download-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+
+    .download-row button {
+      padding: 0.45rem 1rem;
+      background: var(--uc-gray-1);
+      color: var(--uc-white);
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .download-row button:hover { background: var(--uc-gray-2); }
+
+    /* ── No results ───────────────────────────────────────────────────────── */
+    .no-results {
+      color: var(--uc-gray-4);
+      font-style: italic;
+      padding: 1.5rem 0;
+      text-align: center;
+    }
+
+    /* ── Footer ───────────────────────────────────────────────────────────── */
+    footer {
+      background: var(--uc-black);
+      color: var(--uc-gray-5);
+      text-align: center;
+      font-size: 0.75rem;
+      padding: 0.75rem 1rem;
+    }
+
+    footer a { color: var(--uc-gray-4); }
+
+    /* ── Spectrum viewer panel ────────────────────────────────────────────── */
+    #spectrumPanel {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--uc-white);
+      border-top: 2px solid var(--uc-red);
+      box-shadow: 0 -4px 18px rgba(0,0,0,0.13);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      height: 340px;
+      transition: height 0.2s ease;
+    }
+    #spectrumPanel.minimized { height: 36px; overflow: hidden; }
+
+    #spectrumHeader {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.4rem 1rem;
+      background: var(--uc-gray-1);
+      color: var(--uc-white);
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    #spectrumHeader span { flex: 1; }
+    #spectrumMinBtn {
+      background: none; border: none; color: var(--uc-white);
+      font-size: 1rem; cursor: pointer; padding: 0 0.25rem;
+    }
+
+    #spectrumLegend {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+      padding: 0;
+      font-size: 0.78rem;
+      flex-shrink: 0;
+    }
+    #spectrumLegend:empty { display: none; }
+    .legend-item {
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .legend-swatch {
+      width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0;
+    }
+
+    #spectrumCanvas {
+      flex: 1;
+      width: 100%;
+      cursor: crosshair;
+      display: block;
+      min-height: 0;
+      touch-action: none;
+    }
+
+    /* Overlay checkbox in results table */
+    .overlay-cb { cursor: pointer; width: 15px; height: 15px; }
+
+    /* ── Responsive ───────────────────────────────────────────────────────── */
+    @media (max-width: 860px) {
+      html, body {
+        height: auto;
+        min-height: 100%;
+        overflow: auto;
+      }
+
+      header {
+        height: auto;
+        min-height: 56px;
+        padding: 0.65rem 1rem;
+        flex-wrap: wrap;
+      }
+
+      header nav {
+        width: 100%;
+        margin-left: 0;
+        flex-wrap: wrap;
+        gap: 0.45rem 0.9rem;
+      }
+
+      .app-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        height: auto;
+        min-height: 0;
+      }
+
+      .sidebar {
+        height: auto;
+        max-height: none;
+        min-height: 0;
+        overflow: visible;
+        border-right: none;
+        border-bottom: 1px solid var(--uc-gray-5);
+        padding: 1rem;
+      }
+
+      .main-content {
+        min-width: 0;
+        padding: 1rem 1rem 300px;
+      }
+
+      #spectrumPanel {
+        height: min(280px, 48dvh);
+        min-height: 180px;
+      }
+
+      #spectrumPanel.minimized { height: 36px; min-height: 36px; }
+      #spectrumCanvas { touch-action: none; }
+    }
+
+    @media (max-width: 380px) {
+      header .app-subtitle { display: none; }
+      .sidebar { padding: 0.75rem; }
+      .main-content { padding-left: 0.75rem; padding-right: 0.75rem; }
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <a class="logo" href="#">
+    <div class="logo-mark">UC</div>
+    <div>
+      <div class="app-name">nmrshiftsearch</div>
+      <div class="app-subtitle">NMR Database Search</div>
+    </div>
+  </a>
+  <nav>
+    <a href="https://np-mrd.org/" target="_blank" rel="noopener">NP-MRD</a>
+    <a href="https://doi.org/10.1039/D4SC08802F" target="_blank" rel="noopener">NMRBank</a>
+    <a href="https://doi.org/10.1038/s41597-025-06245-5" target="_blank" rel="noopener">NMRexp</a>
+    <a href="https://doi.org/10.1021/om100106e" target="_blank" rel="noopener">Fulmer</a>
+    <a href="https://github.com/greenwoodad/nmrshiftsearch" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/greenwoodad/nmrshiftsearch/blob/main/README.md" target="_blank" rel="noopener">Docs</a>
+  </nav>
+</header>
+
+<!-- ── App layout ──────────────────────────────────────────────────────────── -->
+<div class="app-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <!-- Peak input -->
+    <div class="panel">
+      <div class="panel-header">Peak List Input</div>
+      <div class="panel-body">
+        <div class="peak-input-wrap">
+          <textarea id="peakInput"
+            placeholder="Paste peaks here, or upload a file.&#10;&#10;Accepted formats:&#10;  • Plain list: one shift per line&#10;  • Two columns: f1, f2 (for 2D)&#10;  • Topspin peaklist.xml&#10;  • Topspin peak.txt&#10;  • MNova copy-table"></textarea>
+        </div>
+        <div class="peak-input-actions">
+          <label class="btn-file-upload" for="fileInput">📂 Upload file</label>
+          <input type="file" id="fileInput" accept=".txt,.xml,.csv" />
+          <button class="btn-file-upload" id="clearBtn" style="flex:0 0 auto;">✕ Clear</button>
+        </div>
+        <div class="parsed-preview" id="parsedPreview">No peaks loaded.</div>
+      </div>
+    </div>
+
+    <!-- Nucleus & solvent -->
+    <div class="panel">
+      <div class="panel-header">Experiment</div>
+      <div class="panel-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="nuc1Select">Nucleus (direct)</label>
+            <select id="nuc1Select">
+              <option value="1H"   selected>¹H</option>
+              <option value="13C">¹³C</option>
+              <option value="19F">¹⁹F</option>
+              <option value="31P">³¹P</option>
+              <option value="11B">¹¹B</option>
+              <option value="29Si">²⁹Si</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="nuc2Select">Nucleus (indirect, 2D)</label>
+            <select id="nuc2Select">
+              <option value=""    selected>— (1D) —</option>
+              <option value="13C">¹³C</option>
+              <option value="19F">¹⁹F</option>
+              <option value="31P">³¹P</option>
+              <option value="11B">¹¹B</option>
+              <option value="29Si">²⁹Si</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="solventSelect">Solvent</label>
+          <select id="solventSelect">
+            <option value="all"     selected>All solvents</option>
+            <option value="CDCl3">CDCl₃</option>
+            <option value="DMSO">DMSO-d₆</option>
+            <option value="D2O">D₂O</option>
+            <option value="MeOD">MeOD</option>
+            <option value="CD3CN">CD₃CN</option>
+            <option value="C6D6">C₆D₆</option>
+            <option value="CD2Cl2">CD₂Cl₂</option>
+            <option value="acetone">Acetone-d₆</option>
+            <option value="acetic">Acetic-d₄</option>
+            <option value="DMF">DMF-d₇</option>
+            <option value="pyridine">Pyridine-d₅</option>
+            <option value="THF">THF-d₈</option>
+            <option value="PhMe">Toluene-d₈</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tolerances -->
+    <div class="panel">
+      <div class="panel-header">Tolerances (ppm)</div>
+      <div class="panel-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="tol1Input">Direct dim.</label>
+            <input type="number" id="tol1Input" step="0.01" min="0.001" placeholder="auto" />
+          </div>
+          <div class="form-group">
+            <label for="tol2Input">Indirect dim.</label>
+            <input type="number" id="tol2Input" step="0.05" min="0.01" placeholder="auto" />
+          </div>
+        </div>
+        <div style="font-size:0.75rem;color:var(--uc-gray-4);">
+          Leave blank to use defaults: ¹H 0.03, ¹³C 0.3, others 1.0 ppm.
+        </div>
+      </div>
+    </div>
+
+    <!-- Options -->
+    <div class="panel">
+      <div class="panel-header">Options</div>
+      <div class="panel-body">
+        <div class="form-group">
+          <label for="maxResultsInput">Max results</label>
+          <input type="number" id="maxResultsInput" value="20" min="1" max="500" step="1" />
+        </div>
+
+        <div>
+          <label style="margin-bottom:0.4rem;">Filter by database</label>
+          <div class="db-filter-grid">
+            <label><input type="checkbox" class="db-filter" value="NP"      checked /> NP-MRD</label>
+            <label><input type="checkbox" class="db-filter" value="NMRBank" checked /> NMRBank</label>
+            <label><input type="checkbox" class="db-filter" value="NMRexp"  checked /> NMRexp</label>
+            <label><input type="checkbox" class="db-filter" value="IMPUR"   checked /> Impurities</label>
+          </div>
+        </div>
+
+        <div>
+          <label style="margin-bottom:0.4rem;">Display</label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-weight:400;font-size:0.85rem;cursor:pointer;margin:0;">
+            <input type="checkbox" id="showStructures" checked style="width:auto;accent-color:var(--uc-red);" />
+            Show structure thumbnails
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Search button -->
+    <button id="searchBtn">Search</button>
+
+  </aside>
+
+  <!-- ── Main content ──────────────────────────────────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Progress -->
+    <div id="progressWrap">
+      <progress id="progressBar" max="1" value="0"></progress>
+      <span id="progressLabel">Initialising…</span>
+    </div>
+
+    <!-- Error banner -->
+    <div id="errorBanner"></div>
+
+    <!-- Results -->
+    <div id="resultsContainer">
+      <div class="welcome-card">
+        <h2>NMR Shift Search</h2>
+        <p>
+          Enter a peak list, choose your nucleus and solvent, then click
+          <strong>Search</strong> to find matching compounds across ~1.8M
+          unique structures.
+        </p>
+        <div class="welcome-db-links">
+          <a href="https://np-mrd.org/" target="_blank">NP-MRD</a><span class="sep">·</span><a href="https://doi.org/10.1039/D4SC08802F" target="_blank">NMRBank</a><span class="sep">·</span><a href="https://doi.org/10.1038/s41597-025-06245-5" target="_blank">NMRexp</a><span class="sep">·</span><a href="https://doi.org/10.1021/om100106e" target="_blank">Common impurities (Fulmer et al.)</a>
+        </div>
+        <div class="welcome-nuclei">
+          <div class="nuc-row"><span class="nuc-label">¹H</span><span class="nuc-count">~14M peaks</span></div>
+          <div class="nuc-row"><span class="nuc-label">¹³C</span><span class="nuc-count">~22M peaks</span></div>
+          <div class="nuc-row"><span class="nuc-label">¹⁹F</span><span class="nuc-count">~265k peaks</span></div>
+          <div class="nuc-row"><span class="nuc-label">³¹P</span><span class="nuc-count">~35k peaks</span></div>
+          <div class="nuc-row"><span class="nuc-label">¹¹B</span><span class="nuc-count">~17k peaks</span></div>
+          <div class="nuc-row"><span class="nuc-label">²⁹Si</span><span class="nuc-count">~3k peaks</span></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+
+
+<!-- ── Spectrum viewer panel ──────────────────────────────────────────────── -->
+<div id="spectrumPanel">
+  <div id="spectrumHeader">
+    <span id="spectrumTitle">Spectrum Overlay</span>
+    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+      <div id="spectrumLegend"></div>
+      <button id="spectrumModeBtn" title="Toggle pan/zoom mode" style="font-size:0.75rem;padding:2px 7px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:4px;color:#fff;cursor:pointer;">🔍 Zoom mode</button>
+      <button id="spectrumResetBtn" title="Reset zoom" style="font-size:0.75rem;padding:2px 7px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:4px;color:#fff;cursor:pointer;">⟳ Reset</button>
+      <button id="spectrumClearBtn" title="Clear all overlays" style="font-size:0.75rem;padding:2px 7px;background:rgba(255,100,100,0.25);border:1px solid rgba(255,150,150,0.4);border-radius:4px;color:#fff;cursor:pointer;">✕ Clear</button>
+      <button id="spectrumMinBtn" title="Minimise/expand">▲</button>
+    </div>
+  </div>
+  <canvas id="spectrumCanvas"></canvas>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PARSER
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+var parser = (function() {
+  'use strict';
+  var PREC_1H = 2, PREC_X = 1;
+  function round(val, d) { var f = Math.pow(10, d); return Math.round(val * f) / f; }
+  function isTMS(peak, t1, t2) {
+    t1 = t1 || 0.03; t2 = t2 || 0.3;
+    if (Array.isArray(peak)) return Math.abs(peak[0]) <= t1 && Math.abs(peak[1]) <= t2;
+    return Math.abs(peak) <= t1;
+  }
+  function dedup1D(peaks) {
+    var seen = {};
+    return peaks.filter(function(p) { var k = p.toFixed(PREC_1H); if (seen[k]) return false; seen[k] = true; return true; });
+  }
+  function dedup2D(peaks) {
+    var seen = {};
+    return peaks.filter(function(p) { var k = p[0].toFixed(PREC_1H) + ',' + p[1].toFixed(PREC_X); if (seen[k]) return false; seen[k] = true; return true; });
+  }
+  function finalise1D(raw) {
+    var peaks = dedup1D(raw.map(function(v) { return round(v, PREC_1H); }));
+    peaks.sort(function(a, b) { return a - b; });
+    return { dimension: '1D', peaks: peaks };
+  }
+  function finalise2D(raw) {
+    var peaks = dedup2D(raw.map(function(p) { return [round(p[0], PREC_1H), round(p[1], PREC_X)]; }));
+    peaks.sort(function(a, b) { return a[0] - b[0]; });
+    return { dimension: '2D', peaks: peaks };
+  }
+  function parseXml(xml) {
+    var doc = new DOMParser().parseFromString(xml, 'application/xml');
+    var p1 = doc.querySelectorAll('Peak1D');
+    if (p1.length) {
+      var raw = []; for (var i = 0; i < p1.length; i++) { var v = parseFloat(p1[i].getAttribute('F1')); if (!isNaN(v)) raw.push(v); }
+      return finalise1D(raw);
+    }
+    var p2 = doc.querySelectorAll('Peak2D');
+    if (p2.length) {
+      var raw2 = []; for (var j = 0; j < p2.length; j++) { var f1 = parseFloat(p2[j].getAttribute('F2')), f2 = parseFloat(p2[j].getAttribute('F1')); if (!isNaN(f1) && !isNaN(f2)) raw2.push([f1, f2]); }
+      return finalise2D(raw2);
+    }
+    throw new Error('XML file does not contain Peak1D or Peak2D elements.');
+  }
+  function parseTxt(text) {
+    var lines = text.split(/\r?\n/), i, j, cols, raw;
+    for (i = 0; i < lines.length; i++) {
+      if (/F2\[ppm\]/i.test(lines[i]) && /F1\[ppm\]/i.test(lines[i])) {
+        raw = [];
+        // MNova PEAKLIST_VERSION 1.1 columns:
+        // row#, F2#, F1#, F2[ppm], F1[ppm], Intensity, optional Annotation.
+        // The ppm shifts are columns 3 and 4 after whitespace splitting;
+        // column 5 is intensity, not a chemical shift.
+        for (j = i+1; j < lines.length; j++) {
+          var m = lines[j].match(/^\s*\d+\s+([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)\s+([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)\s+([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)\s+([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)\s+([-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)(?:\s+.*)?\s*$/);
+          if (!m) continue;
+          var f2ppm = Number(m[3]), f1ppm = Number(m[4]);
+          if (Number.isFinite(f2ppm) && Number.isFinite(f1ppm)) raw.push([f2ppm, f1ppm]);
+        }
+        if (raw.length) return finalise2D(raw);
+        throw new Error('MNova peak-list header was found, but no valid 2D peak rows could be parsed.');
+      }
+    }
+    for (i = 0; i < lines.length; i++) {
+      if (/\bf2\b/i.test(lines[i]) && /\bf1\b/i.test(lines[i])) {
+        raw = []; for (j = i+1; j < lines.length; j++) { cols = lines[j].trim().split(/[\t ,]+/); var a=parseFloat(cols[1]),b=parseFloat(cols[2]); if(!isNaN(a)&&!isNaN(b)) raw.push([a,b]); }
+        if (raw.length) return finalise2D(raw); break;
+      }
+    }
+    for (i = 0; i < lines.length; i++) {
+      if (/\bppm\b/i.test(lines[i])) {
+        raw = []; for (j = i+1; j < lines.length; j++) { cols = lines[j].trim().split(/[\t ,]+/); var v=parseFloat(cols[1]); if(!isNaN(v)) raw.push(v); }
+        if (raw.length) return finalise1D(raw); break;
+      }
+    }
+    var raw1D = [], raw2D = [];
+    for (i = 0; i < lines.length; i++) {
+      var clean = lines[i].trim().replace(/,/g, ' '); if (!clean) continue;
+      cols = clean.split(/\s+/); var a=parseFloat(cols[0]),b=parseFloat(cols[1]);
+      if (isNaN(a)) continue;
+      if (!isNaN(b)) raw2D.push([a,b]); else raw1D.push(a);
+    }
+    if (raw2D.length && !raw1D.length) return finalise2D(raw2D);
+    if (raw1D.length && !raw2D.length) return finalise1D(raw1D);
+    if (raw2D.length > raw1D.length)   return finalise2D(raw2D);
+    if (raw1D.length)                  return finalise1D(raw1D);
+    throw new Error('Could not parse any peaks from the input text.');
+  }
+  function parse(text, hint) {
+    hint = hint || ''; var t = text.trim();
+    if (t.charAt(0) === '<' || hint.slice(-4) === '.xml') return parseXml(t);
+    return parseTxt(t);
+  }
+  return { parse: parse };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     HOPCROFT-KARP
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+var hopcroft = (function() {
+  'use strict';
+  var INF = Infinity;
+  function buildAdj(A, B, tol) {
+    return A.map(function(a) { return B.reduce(function(acc,b,j){ if(Math.abs(a-b)<=tol)acc.push(j); return acc; },[]); });
+  }
+  function bfs(adj, pairA, pairB, dist) {
+    var queue=[], head=0, found=false;
+    for(var i=0;i<pairA.length;i++){if(pairA[i]===-1){dist[i]=0;queue.push(i);}else{dist[i]=INF;}}
+    while(head<queue.length){var u=queue[head++]; adj[u].forEach(function(v){var w=pairB[v];if(w===-1){found=true;}else if(dist[w]===INF){dist[w]=dist[u]+1;queue.push(w);}});}
+    return found;
+  }
+  function dfs(u, adj, pairA, pairB, dist) {
+    for(var k=0;k<adj[u].length;k++){var v=adj[u][k],w=pairB[v]; if(w===-1||(dist[w]===dist[u]+1&&dfs(w,adj,pairA,pairB,dist))){pairA[u]=v;pairB[v]=u;return true;}}
+    dist[u]=INF; return false;
+  }
+  function hopcroftKarp(A, B, tol) {
+    if(!A.length||!B.length) return 0;
+    var adj=buildAdj(A,B,tol), pairA=new Array(A.length).fill(-1), pairB=new Array(B.length).fill(-1), dist=new Array(A.length).fill(INF), m=0;
+    while(bfs(adj,pairA,pairB,dist)){for(var i=0;i<A.length;i++)if(pairA[i]===-1&&dfs(i,adj,pairA,pairB,dist))m++;}
+    return m;
+  }
+  function matchRatio(inputPeaks, dbPeaks, totalDbPeaks, tol) {
+    var matched=hopcroftKarp(inputPeaks,dbPeaks,tol), total=totalDbPeaks||0;
+    return {matched:matched,total:total,ratio:total>0?matched/total:0};
+  }
+  return { hopcroftKarp: hopcroftKarp, matchRatio: matchRatio };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     DB LOADER
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+var db = (function() {
+  'use strict';
+  var DB_PATH = 'https://greenwoodad.github.io/nmrshiftsearch/DBs/';
+  var SHARD_RULES = {
+    '1H_CDCl3':  [{suffix:'_part1',min:-Infinity,max:5.0},{suffix:'_part2',min:5.0,max:Infinity}],
+    '1H_all':    [{suffix:'_part1',min:-Infinity,max:5.0},{suffix:'_part2',min:5.0,max:Infinity}],
+    '13C_CDCl3': [{suffix:'_part1',min:-Infinity,max:100.0},{suffix:'_part2',min:100.0,max:135.0},{suffix:'_part3',min:135.0,max:Infinity}],
+    '13C_all':   [{suffix:'_part1',min:-Infinity,max:100.0},{suffix:'_part2',min:100.0,max:135.0},{suffix:'_part3',min:135.0,max:Infinity}],
+  };
+  var SQL=null, dbCache={}, dbOpening={}, idToAcc={}, accToId={}, accessionShiftCache={};
+  function init(cfg) {
+    return initSqlJs(cfg||{}).then(function(sql){ SQL=sql; return _ld('dict_part1.db').then(function(){return _ld('dict_part2.db');}); });
+  }
+  function _ld(f) {
+    return _open(f).then(function(d){ var r=d.exec('SELECT id,name FROM accessions'); if(r.length&&r[0].values)r[0].values.forEach(function(x){idToAcc[x[0]]=x[1];accToId[x[1]]=x[0];}); });
+  }
+  function _open(filename) {
+    if (dbCache[filename]) return Promise.resolve(dbCache[filename]);
+    if (dbOpening[filename]) return dbOpening[filename];
+    dbOpening[filename] = fetch(DB_PATH + filename).then(function(r) {
+      if (!r.ok) throw new Error('Fetch failed: ' + filename + ' (' + r.status + ')');
+      return r.arrayBuffer();
+    }).then(function(buf) {
+      var d = new SQL.Database(new Uint8Array(buf));
+      dbCache[filename] = d;
+      delete dbOpening[filename];
+      return d;
+    }).catch(function(err) {
+      delete dbOpening[filename];
+      throw err;
+    });
+    return dbOpening[filename];
+  }
+  function _shards(nuc,solvent,qMin,qMax) {
+    var key=nuc+'_'+solvent, rules=SHARD_RULES[key];
+    if(!rules) return ['peaks_'+nuc+'_'+solvent+'.db'];
+    return rules.filter(function(s){return qMax>=s.min&&qMin<=s.max;}).map(function(s){return 'peaks_'+nuc+'_'+solvent+s.suffix+'.db';});
+  }
+  function _ids(str){return str?str.split(',').map(Number):[];}
+  function queryPeaks(nuc,solvent,qMin,qMax) {
+    var files=_shards(nuc,solvent,qMin,qMax),out={},chain=Promise.resolve();
+    files.forEach(function(f){chain=chain.then(function(){return _open(f).then(function(d){var r=d.exec('SELECT id_list FROM main_lookup WHERE number_id BETWEEN ? AND ?',[qMin,qMax]);if(r.length&&r[0].values)r[0].values.forEach(function(x){_ids(x[0]).forEach(function(id){out[id]=true;});});}).catch(function(e){console.warn('Skip',f,e.message);});});});
+    return chain.then(function(){return out;});
+  }
+  function queryPeaksWithShifts(nuc,solvent,qMin,qMax) {
+    var files=_shards(nuc,solvent,qMin,qMax),out=[],seen={},chain=Promise.resolve();
+    files.forEach(function(f){chain=chain.then(function(){return _open(f).then(function(d){var r=d.exec('SELECT number_id,id_list FROM main_lookup WHERE number_id BETWEEN ? AND ?',[qMin,qMax]);if(r.length&&r[0].values)r[0].values.forEach(function(x){var sh=x[0];_ids(x[1]).forEach(function(id){var k=sh+':'+id;if(!seen[k]){seen[k]=true;out.push({shift:sh,id:id});}});});}).catch(function(e){console.warn('Skip',f,e.message);});});});
+    return chain.then(function(){return out;});
+  }
+  // Keep each IN clause comfortably below SQLite builds' variable limits.
+  // Large always-included candidate pools (e.g. NP-MRD hits) can otherwise
+  // exceed the bind-parameter limit and make the whole search fail.
+  var SUMMARY_ID_CHUNK = 500;
+  function querySummary(solvent,ids) {
+    var idArr=Object.keys(ids).map(Number); if(!idArr.length) return Promise.resolve({});
+    var result={},files=['database_summary_'+solvent+'.db','database_summary_'+solvent+'_part1.db','database_summary_'+solvent+'_part2.db'],chain=Promise.resolve();
+    files.forEach(function(f){chain=chain.then(function(){return _open(f).then(function(d){
+      for(var start=0;start<idArr.length;start+=SUMMARY_ID_CHUNK){
+        var chunk=idArr.slice(start,start+SUMMARY_ID_CHUNK),ph=chunk.map(function(){return'?';}).join(','),r=d.exec('SELECT accession_id,count_1H,count_13C,mol_weight,smiles,name FROM summary WHERE accession_id IN ('+ph+')',chunk);
+        if(r.length&&r[0].values)r[0].values.forEach(function(x){result[x[0]]={count_1H:x[1],count_13C:x[2],mol_weight:x[3],smiles:x[4],name:x[5]};});
+      }
+    }).catch(function(e){console.warn('Could not read summary shard',f,e.message);});});});
+    return chain.then(function(){return result;});
+  }
+  function queryHetnucSummary(solvent,ids) {
+    var idArr=Object.keys(ids).map(Number); if(!idArr.length) return Promise.resolve({});
+    return _open('database_summary_'+solvent+'_hetnuc.db').then(function(d){
+      var result={};
+      for(var start=0;start<idArr.length;start+=SUMMARY_ID_CHUNK){
+        var chunk=idArr.slice(start,start+SUMMARY_ID_CHUNK),ph=chunk.map(function(){return'?';}).join(','),r=d.exec('SELECT accession_id,count_1H,count_13C,count_31P,count_19F,count_11B,count_29Si,mol_weight,smiles,name FROM hetnuc_summary WHERE accession_id IN ('+ph+')',chunk);
+        if(r.length&&r[0].values)r[0].values.forEach(function(x){result[x[0]]={count_1H:x[1],count_13C:x[2],count_31P:x[3],count_19F:x[4],count_11B:x[5],count_29Si:x[6],mol_weight:x[7],smiles:x[8],name:x[9]};});
+      }
+      return result;
+    }).catch(function(e){console.warn('Could not read heteronuclear summary shard:',e.message);return{};});
+  }
+  function idToName(id){return idToAcc[id]||null;}
+  function classifyAccession(acc){
+    if(/^NP[-_]?\d/i.test(acc)||acc.indexOf('NP-')===0||acc.indexOf('NP0')===0)return'NP';
+    if(acc.indexOf('IMPUR')===0)return'IMPUR';
+    if(acc.indexOf('PMC')===0)return'NMRBank';
+    if(/^\d/.test(acc))return'NMRexp';
+    return'unknown';
+  }
+  function queryAccessionShifts(acc, nuc, solvent) {
+    var id = accToId[acc];
+    if (id === undefined) return Promise.resolve([]);
+    var cacheKey = acc + '|' + nuc + '|' + solvent;
+    if (accessionShiftCache[cacheKey]) return Promise.resolve(accessionShiftCache[cacheKey].slice());
+
+    var base = 'accessions_' + nuc + '_' + solvent;
+    // Try all supported shards. Fetch/open them concurrently so the first overlay
+    // waits for the slowest shard, rather than paying each network/SQLite startup
+    // latency one file at a time. _open() deduplicates simultaneous opens.
+    var fnames = [base + '.db', base + '_part1.db', base + '_part2.db'];
+    if (nuc === '13C') fnames.push(base + '_part3.db');
+
+    return Promise.all(fnames.map(function(fname) {
+      return _open(fname).then(function(d) {
+        var r = d.exec('SELECT peaks FROM spectrum_lookup WHERE accession_id = ?', [id]);
+        var values = [];
+        if (r.length && r[0].values && r[0].values.length) {
+          var raw = r[0].values[0][0];
+          if (raw) {
+            values = raw.split(',').map(Number).filter(function(v){return Number.isFinite(v);});
+          }
+        }
+        return {ok:true, values:values};
+      }).catch(function(err) {
+        // Some deployments have only a subset of these legacy/partitioned files.
+        // Preserve the existing tolerant behavior for absent shards.
+        return {ok:false, values:[], error:err};
+      });
+    })).then(function(results) {
+      var combined = [], anyOpened = false;
+      results.forEach(function(result) {
+        if (result.ok) anyOpened = true;
+        Array.prototype.push.apply(combined, result.values);
+      });
+      // Cache only if at least one real DB was read; this avoids permanently
+      // caching an empty result if every request failed due to a network issue.
+      if (anyOpened) accessionShiftCache[cacheKey] = combined.slice();
+      return combined;
+    });
+  }
+
+  return {init:init,queryPeaks:queryPeaks,queryPeaksWithShifts:queryPeaksWithShifts,
+          querySummary:querySummary,queryHetnucSummary:queryHetnucSummary,
+          idToName:idToName,classifyAccession:classifyAccession,
+          queryAccessionShifts:queryAccessionShifts};
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SEARCH
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+var search = (function() {
+  'use strict';
+  var TOL1={'1H':0.03,'13C':0.3,'31P':1.0,'19F':1.0,'11B':1.0,'29Si':1.0};
+  var TOL2={'13C':0.3,'31P':1.0,'19F':1.0,'11B':1.0,'29Si':1.0};
+  var HK_EXTRA=40; // match bash: rank maxRes+40 with HK then trim
+  function getTol(nuc,ov,map){if(ov!==undefined&&ov!==null&&!isNaN(ov))return+ov;return map[nuc]||1.0;}
+  function peakCount(row,nuc){var k={'1H':'count_1H','13C':'count_13C','31P':'count_31P','19F':'count_19F','11B':'count_11B','29Si':'count_29Si'}[nuc];return(row&&k&&row[k])||0;}
+  function isAlwaysPool(accId){var name=db.idToName(accId)||'';return name.indexOf('IMPUR')===0||/^NP[-_]?\d/i.test(name)||name.indexOf('NP-')===0;}
+
+  function run(params) {
+    var peaks=params.peaks,dim=params.dimension,nuc1=params.nuc1,nuc2=params.nuc2||null;
+    var solvent=params.solvent,maxRes=params.maxResults||20,onProg=params.onProgress||function(){};
+    var tol1=getTol(nuc1,params.tolerance1,TOL1),tol2=nuc2?getTol(nuc2,params.tolerance2,TOL2):null;
+    var isHet=['31P','19F','11B','29Si'].indexOf(nuc1)!==-1;
+    var hitCounts={},uniqueCounts={},dbShiftMap={},inputMatchMap={};
+    onProg(0,'Searching database\u2026');
+    var chain=Promise.resolve();
+    for(var pi=0;pi<peaks.length;pi++){
+      (function(pi){
+        chain=chain.then(function(){
+          var peak=peaks[pi],f1=Array.isArray(peak)?peak[0]:peak,f2=Array.isArray(peak)?peak[1]:null;
+          return db.queryPeaksWithShifts(nuc1,solvent,f1-tol1,f1+tol1).then(function(f1Hits){
+            if(dim==='2D'&&f2!==null&&nuc2){
+              return db.queryPeaks(nuc2,solvent,f2-tol2,f2+tol2).then(function(f2Ids){
+                var hitIds={};
+                f1Hits.forEach(function(h){if(f2Ids[h.id]){hitIds[h.id]=true;if(!dbShiftMap[h.id])dbShiftMap[h.id]={};dbShiftMap[h.id][h.shift]=true;}});
+                return hitIds;
+              });
+            } else {
+              var hitIds={};
+              f1Hits.forEach(function(h){hitIds[h.id]=true;if(!dbShiftMap[h.id])dbShiftMap[h.id]={};dbShiftMap[h.id][h.shift]=true;});
+              return hitIds;
+            }
+          }).then(function(hitIds){
+            var ids=Object.keys(hitIds).map(Number);
+            ids.forEach(function(id){hitCounts[id]=(hitCounts[id]||0)+1;if(!inputMatchMap[id])inputMatchMap[id]={};inputMatchMap[id][f1]=true;});
+            if(ids.length===1)uniqueCounts[ids[0]]=(uniqueCounts[ids[0]]||0)+1;
+            onProg((pi+1)/peaks.length*0.5,'Searched peak '+(pi+1)+' of '+peaks.length);
+          });
+        });
+      })(pi);
+    }
+    return chain.then(function(){
+      if(!Object.keys(hitCounts).length)return{candidates:[],inputPeaks:peaks,params:params,debugRows:[]};
+
+      // Separate always-pool (IMPUR + NP-MRD) from the rest
+      var allIds=Object.keys(hitCounts).map(Number);
+      var alwaysIds=allIds.filter(function(id){return isAlwaysPool(id);});
+      var normalIds=allIds.filter(function(id){return!isAlwaysPool(id);});
+
+      // Sort normal by hit count, take top maxRes+HK_EXTRA for HK scoring
+      normalIds.sort(function(a,b){return hitCounts[b]-hitCounts[a];});
+      var normalPool=normalIds.slice(0,maxRes+HK_EXTRA);
+
+      // Always-pool entries all go through HK regardless of hit count
+      var poolIds=normalPool.concat(alwaysIds);
+      var topIds={}; poolIds.forEach(function(id){topIds[id]=true;});
+
+      onProg(0.55,'Loading compound data\u2026');
+      var sumQ=isHet?db.queryHetnucSummary(solvent,topIds):db.querySummary(solvent,topIds);
+      return sumQ.then(function(sumMap){
+        onProg(0.7,'Computing match ratios\u2026');
+        var candidates=[];
+        var debugRows=[]; // for diagnostic CSV export
+        poolIds.forEach(function(accId,ci){
+          var rawHits=hitCounts[accId],summary=sumMap[accId]; if(!summary)return;
+          var accession=db.idToName(accId)||String(accId),sourceDb=db.classifyAccession(accession);
+          var totalDbPeaks=peakCount(summary,nuc1);
+          var dbPeaks=Object.keys(dbShiftMap[accId]||{}).map(Number),inPeaks=Object.keys(inputMatchMap[accId]||{}).map(Number);
+          var mr=hopcroft.matchRatio(inPeaks,dbPeaks,totalDbPeaks,tol1);
+          var cand={accessionId:accId,accession:accession,sourceDb:sourceDb,hitCount:rawHits,matched:mr.matched,totalDbPeaks:totalDbPeaks,ratio:mr.ratio,uniquePeaks:uniqueCounts[accId]||0,molWeight:summary.mol_weight||null,smiles:summary.smiles||'',name:summary.name||''};
+          candidates.push(cand);
+          debugRows.push({accession:accession,sourceDb:sourceDb,rawHits:rawHits,matched:mr.matched,totalDbPeaks:totalDbPeaks,ratio:mr.ratio,uniquePeaks:uniqueCounts[accId]||0,dbPeaksUsed:dbPeaks.join('|'),inputPeaksMatched:inPeaks.join('|')});
+          onProg(0.7+(ci/poolIds.length)*0.25,'Matching '+(ci+1)+' of '+poolIds.length+'\u2026');
+        });
+
+        // Sort everything by HK ratio — IMPUR competes on equal footing
+        candidates.sort(function(a,b){return b.ratio-a.ratio||b.matched-a.matched;});
+
+        // Trim to maxRes total; IMPUR entries that rank within maxRes are kept,
+        // those that don't are dropped (same as bash behaviour)
+        var finalCandidates=candidates.slice(0,maxRes);
+
+        onProg(1.0,'Done');
+        return{candidates:finalCandidates,inputPeaks:peaks,debugRows:debugRows,params:{nuc1:nuc1,nuc2:nuc2,solvent:solvent,tol1:tol1,tol2:tol2,dimension:dim,maxResults:maxRes}};
+      });
+    });
+  }
+  return{run:run};
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     RESULTS
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+var results = (function() {
+  'use strict';
+  var LABELS={NP:'NP-MRD',IMPUR:'Impurities',NMRBank:'NMRBank',NMRexp:'NMRexp'};
+  var BADGES={NP:'badge-np',IMPUR:'badge-impur',NMRBank:'badge-nmrbank',NMRexp:'badge-nmrexp'};
+  function fmtRatio(c){return(c.ratio*100).toFixed(1)+'% ('+c.matched+'/'+c.totalDbPeaks+')';}
+  function filter(candidates,opts){var inc=opts&&opts.includeDbs;if(!inc||!inc.size)return candidates;return candidates.filter(function(c){return inc.has(c.sourceDb);});}
+  var structureSvgCache = Object.create(null);
+  function drawStructure(smiles,size){
+    size = size || 200;
+    if (!smiles) return null;
+    var key = size + '|' + smiles;
+    var svg = structureSvgCache[key];
+    if (!svg) {
+      if (typeof window.RDKit === 'undefined') return null;
+      var mol = null;
+      try {
+        mol = window.RDKit.get_mol(smiles);
+        if (!mol) return null;
+        svg = mol.get_svg_with_highlights(JSON.stringify({width:size,height:size,addStereoAnnotation:true}));
+        structureSvgCache[key] = svg;
+      } catch (e) { return null; }
+      finally { if (mol && typeof mol.delete === 'function') { try { mol.delete(); } catch (_) {} } }
+    }
+    var img = document.createElement('img');
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    img.width = img.height = size;
+    img.alt = 'Chemical structure';
+    return img;
+  }
+  // Strip trailing .N suffix (e.g. "NP-123456.1" → "NP-123456") for URL construction
+  function _baseAcc(acc){return acc.replace(/\.\d+$/,'');}
+  function _url(c){
+    var base=_baseAcc(c.accession);
+    switch(c.sourceDb){
+      case'NP':     return'https://np-mrd.org/natural_products/'+base;
+      case'IMPUR':  return'https://pubs.acs.org/doi/10.1021/om100106e';
+      case'NMRBank':return'https://www.ncbi.nlm.nih.gov/pmc/articles/'+base+'/';
+      case'NMRexp': return'https://doi.org/'+base.replace(/_/g,'/');
+      default:      return'#';
+    }
+  }
+  function render(searchResults,containerEl,opts){
+    opts=opts||{};var inc=opts.includeDbs||null,showStr=opts.showStructures!==false,sz=opts.structureSize||150;
+    containerEl.innerHTML='';
+    var candidates=searchResults.candidates,params=searchResults.params,debugRows=searchResults.debugRows||[];
+    if(!candidates.length){containerEl.innerHTML='<p class="no-results">No matches found.</p>';return;}
+    var displayed=filter(candidates,{includeDbs:inc});
+    if(!displayed.length){containerEl.innerHTML='<p class="no-results">No matches after filtering.</p>';return;}
+    var sum=document.createElement('p');sum.className='results-summary';
+    sum.textContent=displayed.length+' result'+(displayed.length!==1?'s':'')+' \u00b7 '+params.nuc1+(params.nuc2?'/'+params.nuc2:'')+' \u00b7 '+params.solvent+' \u00b7 tol '+params.tol1+' ppm'+(params.tol2?' / '+params.tol2+' ppm':'');
+    containerEl.appendChild(sum);
+    var table=document.createElement('table');table.className='results-table';
+    var thead=table.createTHead(),hrow=thead.insertRow();
+    ['Plot','Rank','HK Ratio','Unique','Accession','Name','MW','DB'].concat(showStr?['Structure']:[]).forEach(function(h){var th=document.createElement('th');th.textContent=h;hrow.appendChild(th);});
+    var tbody=table.createTBody();
+    displayed.forEach(function(c,idx){
+      var row=tbody.insertRow();row.className=idx%2===0?'row-even':'row-odd';
+      var cbtd=row.insertCell();cbtd.style.textAlign='center';
+      var cb=document.createElement('input');cb.type='checkbox';cb.className='overlay-cb';
+      cb.dataset.acc=c.accession;cb.dataset.nuc1=params.nuc1;cb.dataset.nuc2=params.nuc2||'';
+      cb.dataset.solvent=params.solvent;cb.dataset.label=(c.name||c.accession).slice(0,40);
+      cb.title='Overlay in spectrum viewer';cbtd.appendChild(cb);
+      row.insertCell().textContent=String(idx+1);
+      var rtd=row.insertCell();rtd.textContent=fmtRatio(c);var pct=c.ratio*100;rtd.className=pct>=50?'ratio-high':pct>=20?'ratio-med':'ratio-low';
+      row.insertCell().textContent=String(c.uniquePeaks); // always show number, 0 not —
+      var atd=row.insertCell(),a=document.createElement('a');a.textContent=c.accession;a.href=_url(c);a.target='_blank';a.rel='noopener noreferrer';atd.appendChild(a);
+      row.insertCell().textContent=c.name||'\u2014';
+      row.insertCell().textContent=c.molWeight!=null?Number(c.molWeight).toFixed(3):'\u2014';
+      var btd=row.insertCell(),span=document.createElement('span');span.className='badge '+(BADGES[c.sourceDb]||'');span.textContent=LABELS[c.sourceDb]||c.sourceDb;btd.appendChild(span);
+      if(showStr){var std=row.insertCell();std.className='struct-cell';var img=drawStructure(c.smiles,sz);if(img){std.appendChild(img);}else{std.textContent=c.smiles?'(no renderer)':'\u2014';std.className+=' no-structure';}}
+    });
+    containerEl.appendChild(table);
+    var btnRow=document.createElement('div');btnRow.className='download-row';
+    var csvBtn=document.createElement('button');csvBtn.textContent='Download CSV';csvBtn.onclick=function(){_csv(displayed,params);};btnRow.appendChild(csvBtn);
+    if(debugRows.length){var dbgBtn=document.createElement('button');dbgBtn.textContent='Download debug CSV';dbgBtn.style.marginLeft='8px';dbgBtn.onclick=function(){_debugCsv(debugRows,params);};btnRow.appendChild(dbgBtn);}
+    containerEl.appendChild(btnRow);
+  }
+  function _download(filename,csvText){
+    // data: URI works in sandboxed iframes where createObjectURL is blocked
+    var uri='data:text/csv;charset=utf-8,'+encodeURIComponent(csvText);
+    var a=document.createElement('a');
+    a.href=uri;a.download=filename;a.style.display='none';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+  }
+  function csvEscape(value, protectFormula) {
+    var text = value == null ? '' : String(value);
+    if (protectFormula && /^[\s\u0000-\u001f]*[=+@-]/.test(text)) text = "'" + text;
+    return '"' + text.replace(/"/g, '""') + '"';
+  }
+  function _csv(candidates,params){
+    var nuc2part=params.nuc2?'_'+params.nuc2:'';
+    var hdr='Rank,Accession,Name,HK_ratio,Matched,Total_DB_peaks,Unique_peaks,Mol_weight,Source_DB,SMILES';
+    var rows=candidates.map(function(c,i){return[i+1,csvEscape(c.accession,true),csvEscape(c.name||'',true),Number(c.ratio||0).toFixed(4),Number(c.matched||0),Number(c.totalDbPeaks||0),Number(c.uniquePeaks||0),c.molWeight!=null?Number(c.molWeight).toFixed(3):'',csvEscape(c.sourceDb,true),csvEscape(c.smiles||'',true)].join(',');});
+    _download('nmrshiftsearch_'+params.nuc1+nuc2part+'_'+params.solvent+'.csv',[hdr].concat(rows).join('\r\n'));
+  }
+  function _debugCsv(debugRows,params){
+    var nuc2part=params.nuc2?'_'+params.nuc2:'';
+    var hdr='Accession,Source_DB,Raw_hits,HK_matched,Total_DB_peaks,HK_ratio,Unique_peaks,DB_peaks_used,Input_peaks_matched';
+    var rows=debugRows.map(function(r){return[csvEscape(r.accession,true),csvEscape(r.sourceDb,true),Number(r.rawHits||0),Number(r.matched||0),Number(r.totalDbPeaks||0),Number(r.ratio||0).toFixed(4),Number(r.uniquePeaks||0),csvEscape(r.dbPeaksUsed,true),csvEscape(r.inputPeaksMatched,true)].join(',');});
+    _download('nmrshiftsearch_debug_'+params.nuc1+nuc2part+'_'+params.solvent+'.csv',[hdr].concat(rows).join('\r\n'));
+  }
+  return{render:render,filter:filter,drawStructure:drawStructure};
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     APP CONTROLLER
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+(function(){
+  'use strict';
+  var peakInput=document.getElementById('peakInput'),fileInput=document.getElementById('fileInput'),clearBtn=document.getElementById('clearBtn');
+  var parsedPreview=document.getElementById('parsedPreview'),nuc1Select=document.getElementById('nuc1Select'),nuc2Select=document.getElementById('nuc2Select');
+  var solventSelect=document.getElementById('solventSelect'),tol1Input=document.getElementById('tol1Input'),tol2Input=document.getElementById('tol2Input');
+  var maxResultsInput=document.getElementById('maxResultsInput'),showStructures=document.getElementById('showStructures'),searchBtn=document.getElementById('searchBtn');
+  var progressWrap=document.getElementById('progressWrap'),progressBar=document.getElementById('progressBar'),progressLabel=document.getElementById('progressLabel');
+  var errorBanner=document.getElementById('errorBanner'),resultsContainer=document.getElementById('resultsContainer');
+  var parsedPeaks=null,lastResults=null,sqlReady=false;
+
+  function showError(msg){errorBanner.textContent=msg;errorBanner.classList.add('visible');}
+  function clearError(){errorBanner.textContent='';errorBanner.classList.remove('visible');}
+  function setProgress(f,msg){progressBar.value=Math.min(1,Math.max(0,f));if(progressLabel)progressLabel.textContent=msg||'';}
+  function showProgress(v){progressWrap.classList.toggle('visible',v);}
+  function getDbFilterSet(){var checked=Array.prototype.slice.call(document.querySelectorAll('.db-filter:checked')).map(function(el){return el.value;});if(checked.length===4)return null;return new Set(checked);}
+  function setSearchControlsDisabled(disabled){
+    [peakInput,fileInput,clearBtn,nuc1Select,nuc2Select,solventSelect,tol1Input,tol2Input,maxResultsInput,showStructures]
+      .concat(Array.prototype.slice.call(document.querySelectorAll('.db-filter')))
+      .forEach(function(el){ if (el) el.disabled = disabled; });
+  }
+
+  function tryParsePeaks(text,hint){
+    if(!text.trim()){parsedPeaks=null;parsedPreview.textContent='No peaks loaded.';parsedPreview.className='parsed-preview';return;}
+    try{
+      parsedPeaks=parser.parse(text,hint||'');
+      var n=parsedPeaks.peaks.length,d=parsedPeaks.dimension;
+      parsedPreview.textContent='\u2713 '+n+' peak'+(n!==1?'s':'')+' parsed ('+d+')';
+      parsedPreview.className='parsed-preview ok';
+      if(d==='2D'&&nuc2Select.value==='')nuc2Select.value='13C';
+    }catch(e){parsedPeaks=null;parsedPreview.textContent='\u2717 '+e.message;parsedPreview.className='parsed-preview err';}
+  }
+
+  peakInput.addEventListener('input',function(){tryParsePeaks(peakInput.value);});
+  fileInput.addEventListener('change',function(){var file=fileInput.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(e){peakInput.value=e.target.result;tryParsePeaks(e.target.result,file.name);};reader.onerror=function(){showError('Could not read file.');};reader.readAsText(file);fileInput.value='';});
+  clearBtn.addEventListener('click',function(){peakInput.value='';parsedPeaks=null;parsedPreview.textContent='No peaks loaded.';parsedPreview.className='parsed-preview';clearError();});
+  document.querySelectorAll('.db-filter,#showStructures').forEach(function(el){el.addEventListener('change',function(){if(lastResults)renderResults(lastResults);});});
+  searchBtn.addEventListener('click',runSearch);
+
+  function runSearch(){
+    clearError();
+    if(!sqlReady){showError('SQL engine not ready yet \u2014 please wait a moment.');return;}
+    if(!parsedPeaks||!parsedPeaks.peaks.length){showError('Please enter or upload a peak list first.');return;}
+    var nuc1=nuc1Select.value,nuc2=nuc2Select.value||null,solvent=solventSelect.value;
+    var tol1 = tol1Input.value.trim() === '' ? undefined : Number(tol1Input.value);
+    var tol2 = tol2Input.value.trim() === '' ? undefined : Number(tol2Input.value);
+    var maxRes = Number(maxResultsInput.value);
+    if (!Number.isInteger(maxRes) || maxRes < 1 || maxRes > 500) { showError('Max results must be a whole number from 1 to 500.'); return; }
+    if (tol1 !== undefined && (!Number.isFinite(tol1) || tol1 <= 0)) { showError('Direct-dimension tolerance must be a positive finite number, or blank for automatic tolerance.'); return; }
+    if (tol2 !== undefined && (!Number.isFinite(tol2) || tol2 <= 0)) { showError('Indirect-dimension tolerance must be a positive finite number, or blank for automatic tolerance.'); return; }
+    if(parsedPeaks.dimension==='2D'&&!nuc2){showError('2D data detected but no indirect nucleus selected.');return;}
+    searchBtn.disabled=true;setSearchControlsDisabled(true);showProgress(true);setProgress(0,'Starting search\u2026');resultsContainer.innerHTML='';
+    // clear spectrum overlays from previous search (don't redraw yet — parsedPeaks is about to change)
+    overlayData={};vp=null;updateLegend();
+    search.run({peaks:parsedPeaks.peaks,dimension:parsedPeaks.dimension,nuc1:nuc1,nuc2:nuc2,solvent:solvent,tolerance1:tol1,tolerance2:tol2,maxResults:maxRes,onProgress:setProgress})
+      .then(function(res){lastResults=res;vp=null;renderResults(res);drawSpectrum();})
+      .catch(function(e){showError('Search failed: '+e.message);console.error(e);})
+      .finally(function(){searchBtn.disabled=false;setSearchControlsDisabled(false);showProgress(false);});
+  }
+
+  function renderResults(r){
+    results.render(r,resultsContainer,{includeDbs:getDbFilterSet(),showStructures:showStructures.checked,structureSize:150});
+    // Restore checked state for any accessions still in overlayData
+    document.querySelectorAll('.overlay-cb').forEach(function(cb){
+      if(overlayData[cb.dataset.acc]) cb.checked=true;
+    });
+  }
+
+  showProgress(true); setProgress(0.05, 'Loading SQL engine\u2026');
+  db.init({locateFile:function(f){return'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/'+f;}})
+    .then(function(){
+      sqlReady=true;
+      setProgress(1,'Ready.');
+      setTimeout(function(){showProgress(false);},800);
+      console.log('SQL + dict shards ready.');
+    })
+    .catch(function(e){
+      showProgress(false);
+      showError('Failed to initialise SQL engine: '+e.message+
+        ' \u2014 Check browser console (F12) for details.');
+      console.error('db.init failed:',e);
+    });
+
+  (function poll(){
+    var deadline=Date.now()+15000,id=setInterval(function(){
+      if(typeof window.initRDKitModule==='function'){clearInterval(id);window.initRDKitModule({locateFile:function(f){return'https://greenwoodad.github.io/nmrshiftsearch/js/'+f;}}).then(function(rdk){window.RDKit=rdk;console.log('RDKit ready.');if(lastResults)renderResults(lastResults);}).catch(function(e){console.warn('RDKit failed:',e);});}
+      else if(Date.now()>deadline){clearInterval(id);console.warn('RDKit timed out.');}
+    },200);
+  })();
+  // ── Spectrum viewer ────────────────────────────────────────────────────────
+  var OVERLAY_COLORS = ['#e00122','#0057a8','#2a9d3f','#e67e00','#7b2d8b','#00868a','#c9a800','#555555'];
+  var overlayData   = {};   // accession -> {color, shifts1H, shiftsX, label, nuc1, nuc2}
+  var specMinimized = false;
+  var vp = null;            // {x0,x1[,y0,y1]} — null = auto-fit
+  var specMode = 'pan';     // 'pan' | 'zoom'
+  var drag = null;          // {startX,startY,vpSnap,canvasX,canvasY} for pan; {x0,y0,x1,y1} for zoom-rect
+  var spectrumDrawFrame = 0;
+  var spectrumPanelTransitioning = false;
+  var spectrumResizeObserver = null;
+
+  var specPanel  = document.getElementById('spectrumPanel');
+  var specCanvas = document.getElementById('spectrumCanvas');
+  var specLegend = document.getElementById('spectrumLegend');
+  var specMinBtn = document.getElementById('spectrumMinBtn');
+  var specCtx    = null;
+  function getCtx(){ if(!specCtx && specCanvas) specCtx=specCanvas.getContext('2d'); return specCtx; }
+
+  // ── Mode toggle button ─────────────────────────────────────────────────────
+  var specModeBtn = document.getElementById('spectrumModeBtn');
+  if (specModeBtn) specModeBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    specMode = specMode==='pan' ? 'zoom' : 'pan';
+    specModeBtn.textContent = specMode==='pan' ? '🔍 Zoom mode' : '✋ Pan mode';
+    specCanvas.style.cursor = specMode==='pan' ? 'grab' : 'crosshair';
+  });
+
+  // ── Reset zoom button ──────────────────────────────────────────────────────
+  var specResetBtn = document.getElementById('spectrumResetBtn');
+  if (specResetBtn) specResetBtn.addEventListener('click', function(e){
+    e.stopPropagation(); vp=null; drawSpectrum();
+  });
+
+  // ── Clear all overlays button ──────────────────────────────────────────────
+  var specClearBtn = document.getElementById('spectrumClearBtn');
+  if (specClearBtn) specClearBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    overlayData = {};
+    vp = null;
+    document.querySelectorAll('.overlay-cb').forEach(function(cb){ cb.checked=false; });
+    updateLegend();
+    drawSpectrum();
+  });
+
+  // ── Minimise / expand — header click only (not buttons) ───────────────────
+  function toggleMinimize(){
+    specMinimized = !specMinimized;
+    specPanel.classList.toggle('minimized', specMinimized);
+    specMinBtn.textContent = specMinimized ? '▲' : '▼';
+    if (!specMinimized) scheduleSpectrumDraw();
+  }
+  specMinBtn.addEventListener('click', function(e){ e.stopPropagation(); toggleMinimize(); });
+  document.getElementById('spectrumHeader').addEventListener('click', function(e){
+    // Only toggle if click was directly on header or its label span, not on buttons/legend
+    if (e.target === this || e.target.id === 'spectrumTitle') toggleMinimize();
+  });
+
+  // ── Start minimized ───────────────────────────────────────────────────────
+  specMinimized = true;
+  specPanel.classList.add('minimized');
+  specMinBtn.textContent = '▲';
+
+  // ── Full data range helpers (with 20% max zoom-out limit) ─────────────────
+  function fullRange1D(inputPeaks){
+    var all = inputPeaks.map(function(p){return Array.isArray(p)?p[0]:p;});
+    Object.values(overlayData).forEach(function(d){ (d.shifts1H||[]).forEach(function(v){all.push(v);}); });
+    if (!all.length) return {min:-1, max:10};
+    // Avoid Math.min/max.apply argument limits for very large peak/overlay lists.
+    var mn=Infinity,mx=-Infinity;
+    for(var i=0;i<all.length;i++){if(Number.isFinite(all[i])){if(all[i]<mn)mn=all[i];if(all[i]>mx)mx=all[i];}}
+    if(!Number.isFinite(mn)||!Number.isFinite(mx)) return {min:-1,max:10};
+    var pad=Math.max((mx-mn)*0.12,0.3);
+    return {min:mn-pad, max:mx+pad};
+  }
+
+  function fullRange2D(inputPeaks){
+    var all1=[],allX=[];
+    inputPeaks.forEach(function(p){all1.push(p[0]);allX.push(p[1]);});
+    Object.values(overlayData).forEach(function(d){
+      (d.shifts1H||[]).forEach(function(v){all1.push(v);});
+      (d.shiftsX||[]).forEach(function(v){allX.push(v);});
+    });
+    if(!all1.length){all1=[0,10];} if(!allX.length){allX=[0,100];}
+    // Iterate instead of spreading large arrays into Math.min/max.
+    var mn1=Infinity,mx1=-Infinity,mn2=Infinity,mx2=-Infinity;
+    all1.forEach(function(v){if(Number.isFinite(v)){if(v<mn1)mn1=v;if(v>mx1)mx1=v;}});
+    allX.forEach(function(v){if(Number.isFinite(v)){if(v<mn2)mn2=v;if(v>mx2)mx2=v;}});
+    if(!Number.isFinite(mn1)||!Number.isFinite(mx1)){mn1=0;mx1=10;}
+    if(!Number.isFinite(mn2)||!Number.isFinite(mx2)){mn2=0;mx2=100;}
+    var p1=Math.max((mx1-mn1)*0.12,0.3), p2=Math.max((mx2-mn2)*0.08,1);
+    return {r1:{min:mn1-p1,max:mx1+p1}, r2:{min:mn2-p2,max:mx2+p2}};
+  }
+
+  // clamp vp so user can't zoom out more than 20% beyond the full data range
+  function clampVp(full1, full2){
+    if (!vp) return;
+    var ext1 = (full1.max - full1.min) * 0.2;
+    vp.x0 = Math.max(vp.x0, full1.min - ext1);
+    vp.x1 = Math.min(vp.x1, full1.max + ext1);
+    if (full2 && vp.y0 !== undefined){
+      var ext2 = (full2.max - full2.min) * 0.2;
+      vp.y0 = Math.max(vp.y0, full2.min - ext2);
+      vp.y1 = Math.min(vp.y1, full2.max + ext2);
+    }
+    // prevent inversion
+    if (vp.x1 <= vp.x0) vp.x1 = vp.x0 + 0.01;
+    if (full2 && vp.y0 !== undefined && vp.y1 <= vp.y0) vp.y1 = vp.y0 + 0.1;
+  }
+
+  // ── Mouse wheel zoom (cursor-centred) ─────────────────────────────────────
+  specCanvas.addEventListener('wheel', function(e){
+    e.preventDefault();
+    if (!vp) return;
+    var is2D = parsedPeaks && parsedPeaks.dimension === '2D';
+    var full = is2D ? fullRange2D(parsedPeaks.peaks) : {r1: fullRange1D(parsedPeaks ? parsedPeaks.peaks : [])};
+    var rect = specCanvas.getBoundingClientRect();
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var W = specCanvas.width, H = specCanvas.height;
+    var PAD = {l:60, r:20, t:22, b:44};
+    var plotW = W-PAD.l-PAD.r, plotH = H-PAD.t-PAD.b;
+    var fracX = Math.max(0, Math.min(1, (cx-PAD.l)/plotW));
+    var factor = e.deltaY > 0 ? 1.15 : 0.87;
+    var span1 = vp.x1 - vp.x0;
+    // cursor ppm on x-axis (NMR: high ppm = left, so fracX=0 → max ppm)
+    var curPpm1 = vp.x1 - fracX * span1;
+    vp.x0 = curPpm1 - (curPpm1 - vp.x0) * factor;
+    vp.x1 = curPpm1 + (vp.x1 - curPpm1) * factor;
+    if (is2D && vp.y0 !== undefined){
+      var fracY = Math.max(0, Math.min(1, (cy-PAD.t)/plotH));
+      var span2 = vp.y1 - vp.y0;
+      var curPpm2 = vp.y0 + fracY * span2;
+      vp.y0 = curPpm2 - (curPpm2 - vp.y0) * factor;
+      vp.y1 = curPpm2 + (vp.y1 - curPpm2) * factor;
+      clampVp(full.r1, full.r2);
+    } else {
+      clampVp(full.r1, null);
+    }
+    drawSpectrum();
+  }, {passive: false});
+
+  // ── Mouse down ────────────────────────────────────────────────────────────
+  specCanvas.addEventListener('pointerdown', function(e){
+    if (e.button !== 0) return;
+    e.preventDefault();
+    if (specCanvas.setPointerCapture) { try { specCanvas.setPointerCapture(e.pointerId); } catch (_) {} }
+    // Ensure vp is initialised before any drag (prevents pan edge bug)
+    if (!vp && parsedPeaks) {
+      if (parsedPeaks.dimension === '2D') {
+        var fr2 = fullRange2D(parsedPeaks.peaks);
+        vp = {x0:fr2.r1.min, x1:fr2.r1.max, y0:fr2.r2.min, y1:fr2.r2.max};
+      } else {
+        var fr1 = fullRange1D(parsedPeaks.peaks);
+        vp = {x0:fr1.min, x1:fr1.max};
+      }
+    }
+    var rect = specCanvas.getBoundingClientRect();
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    if (specMode === 'pan'){
+      drag = {mode:'pan', startX:e.clientX, startY:e.clientY, vpSnap: vp ? JSON.parse(JSON.stringify(vp)) : null};
+      specCanvas.style.cursor = 'grabbing';
+    } else {
+      drag = {mode:'zoom', x0:cx, y0:cy, x1:cx, y1:cy};
+      specCanvas.style.cursor = 'crosshair';
+    }
+  });
+
+  // ── Mouse move ────────────────────────────────────────────────────────────
+  specCanvas.addEventListener('pointermove', function(e){
+    if (!drag) return;
+    var rect = specCanvas.getBoundingClientRect();
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    if (drag.mode === 'pan'){
+      if (!drag.vpSnap || !vp) return;
+      var W = specCanvas.width, H = specCanvas.height;
+      var PAD = {l:60, r:20, t:22, b:44};
+      var plotW = W-PAD.l-PAD.r, plotH = H-PAD.t-PAD.b;
+      var dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
+      var is2Dp = parsedPeaks && parsedPeaks.dimension === '2D';
+      var fullP = is2Dp ? fullRange2D(parsedPeaks.peaks) : {r1: fullRange1D(parsedPeaks ? parsedPeaks.peaks : [])};
+      var ext1 = (fullP.r1.max - fullP.r1.min) * 0.2;
+      var hardMin1 = fullP.r1.min - ext1, hardMax1 = fullP.r1.max + ext1;
+      // NMR x-axis inverted: drag right → ppm increases
+      var dppm1 = dx / plotW * (drag.vpSnap.x1 - drag.vpSnap.x0);
+      var span1 = drag.vpSnap.x1 - drag.vpSnap.x0;
+      var newX0 = drag.vpSnap.x0 + dppm1, newX1 = drag.vpSnap.x1 + dppm1;
+      // clamp translation so span is preserved (no zoom at edge)
+      if (newX0 < hardMin1){ newX0 = hardMin1; newX1 = hardMin1 + span1; }
+      if (newX1 > hardMax1){ newX1 = hardMax1; newX0 = hardMax1 - span1; }
+      vp.x0 = newX0; vp.x1 = newX1;
+      if (vp.y0 !== undefined && fullP.r2){
+        var ext2 = (fullP.r2.max - fullP.r2.min) * 0.2;
+        var hardMin2 = fullP.r2.min - ext2, hardMax2 = fullP.r2.max + ext2;
+        // Indirect axis increases downward: dragging down shifts peaks down, so lower the ppm window.
+        var dppm2 = -dy / plotH * (drag.vpSnap.y1 - drag.vpSnap.y0);
+        var span2 = drag.vpSnap.y1 - drag.vpSnap.y0;
+        var newY0 = drag.vpSnap.y0 + dppm2, newY1 = drag.vpSnap.y1 + dppm2;
+        if (newY0 < hardMin2){ newY0 = hardMin2; newY1 = hardMin2 + span2; }
+        if (newY1 > hardMax2){ newY1 = hardMax2; newY0 = hardMax2 - span2; }
+        vp.y0 = newY0; vp.y1 = newY1;
+      }
+      drawSpectrum();
+    } else {
+      drag.x1 = cx; drag.y1 = cy;
+      drawSpectrum(); // redraws with zoom-rect overlay
+    }
+  });
+
+  // ── Mouse up ──────────────────────────────────────────────────────────────
+  specCanvas.addEventListener('pointerup', function(e){
+    if (!drag) return;
+    if (drag.mode === 'zoom' && parsedPeaks){
+      var W = specCanvas.width, H = specCanvas.height;
+      var PAD = {l:60, r:20, t:22, b:44};
+      var plotW = W-PAD.l-PAD.r, plotH = H-PAD.t-PAD.b;
+      var is2D = parsedPeaks.dimension === '2D';
+      var full = is2D ? fullRange2D(parsedPeaks.peaks) : {r1: fullRange1D(parsedPeaks.peaks)};
+      var r1 = vp ? {min:vp.x0,max:vp.x1} : full.r1;
+      var r2 = (vp && vp.y0!==undefined) ? {min:vp.y0,max:vp.y1} : (full.r2||null);
+      var px0=Math.min(drag.x0,drag.x1), px1=Math.max(drag.x0,drag.x1);
+      var py0=Math.min(drag.y0,drag.y1), py1=Math.max(drag.y0,drag.y1);
+      if (px1-px0 > 5){ // only zoom if drag was meaningful
+        // x: NMR inverted — left pixel = high ppm
+        var newX1 = r1.max - (px0-PAD.l)/plotW*(r1.max-r1.min);
+        var newX0 = r1.max - (px1-PAD.l)/plotW*(r1.max-r1.min);
+        vp = vp || {};
+        vp.x0 = newX0; vp.x1 = newX1;
+        if (is2D && r2 && py1-py0 > 5){
+          vp.y0 = r2.min + (py0-PAD.t)/plotH*(r2.max-r2.min);
+          vp.y1 = r2.min + (py1-PAD.t)/plotH*(r2.max-r2.min);
+        }
+        clampVp(full.r1, full.r2||null);
+      }
+    }
+    drag = null;
+    specCanvas.style.cursor = specMode==='pan' ? 'grab' : 'crosshair';
+    drawSpectrum();
+    if (specCanvas.releasePointerCapture && specCanvas.hasPointerCapture && specCanvas.hasPointerCapture(e.pointerId)) { try { specCanvas.releasePointerCapture(e.pointerId); } catch (_) {} }
+  });
+
+  specCanvas.addEventListener('pointercancel', function(){
+    drag = null;
+    specCanvas.style.cursor = specMode === 'pan' ? 'grab' : 'crosshair';
+    drawSpectrum();
+  });
+
+  // Double-click to reset zoom
+  specCanvas.addEventListener('dblclick', function(){ vp=null; drawSpectrum(); });
+  specCanvas.style.cursor = 'grab';
+
+  // ── Checkbox handler ───────────────────────────────────────────────────────
+  resultsContainer.addEventListener('change', function(e){
+    if (!e.target.classList.contains('overlay-cb')) return;
+    var acc     = e.target.dataset.acc;
+    var nuc1v   = e.target.dataset.nuc1;
+    var nuc2v   = e.target.dataset.nuc2 || null;
+    var solvent = e.target.dataset.solvent;
+    var label   = e.target.dataset.label;
+    if (e.target.checked){
+      // show panel immediately, then load data
+      specMinimized = false;
+      specPanel.classList.remove('minimized');
+      specMinBtn.textContent = '▼';
+      specPanel.classList.add('visible');
+      var usedColors = Object.values(overlayData).map(function(d){return d.color;});
+      var color = OVERLAY_COLORS.find(function(c){return usedColors.indexOf(c)===-1;}) || OVERLAY_COLORS[0];
+      overlayData[acc] = {color:color, shifts1H:[], shiftsX:[], label:label, nuc1:nuc1v, nuc2:nuc2v, loading:true};
+      updateLegend();
+      var overlayEntry = overlayData[acc];
+      Promise.all([
+        db.queryAccessionShifts(acc, nuc1v, solvent),
+        nuc2v ? db.queryAccessionShifts(acc, nuc2v, solvent) : Promise.resolve([])
+      ]).then(function(res){
+        // The checkbox may have been unchecked while the DBs were loading.
+        if (overlayData[acc] !== overlayEntry) return;
+        overlayEntry.shifts1H = res[0]||[];
+        overlayEntry.shiftsX  = res[1]||[];
+        overlayEntry.loading  = false;
+        vp = null;
+        updateLegend();
+        drawSpectrum();
+      }).catch(function(err){
+        console.warn('Could not fetch shifts for', acc, err);
+        if (overlayData[acc] !== overlayEntry) return;
+        delete overlayData[acc];
+        e.target.checked = false;
+        updateLegend();
+        drawSpectrum();
+      });
+    } else {
+      delete overlayData[acc];
+      // keep vp so user doesn't lose zoom position on uncheck
+      updateLegend();
+      drawSpectrum();
+      // ensure this checkbox stays unchecked (re-render may reset it)
+      e.target.checked = false;
+    }
+  });
+
+  function updateLegend(){
+    // Database-derived labels must be text, never parsed as HTML.
+    specLegend.textContent = '';
+    Object.keys(overlayData).forEach(function(acc){
+      var d = overlayData[acc];
+      var item = document.createElement('div');
+      item.className = 'legend-item';
+      var swatch = document.createElement('div');
+      swatch.className = 'legend-swatch';
+      swatch.style.background = OVERLAY_COLORS.indexOf(d.color) !== -1 ? d.color : OVERLAY_COLORS[0];
+      var label = document.createElement('span');
+      label.textContent = (d.loading ? '⏳ ' : '') + String(d.label || acc);
+      item.appendChild(swatch);
+      item.appendChild(label);
+      specLegend.appendChild(item);
+    });
+  }
+
+  function updateSpectrumPanel(){
+    updateLegend();
+    drawSpectrum();
+  }
+
+  // ── Draw ───────────────────────────────────────────────────────────────────
+  // Coalesce layout-driven redraws. During the panel's height transition, wait
+  // for transitionend rather than repeatedly drawing at intermediate heights.
+  function scheduleSpectrumDraw(){
+    if (specMinimized || spectrumPanelTransitioning || spectrumDrawFrame) return;
+    spectrumDrawFrame = requestAnimationFrame(function(){
+      spectrumDrawFrame = 0;
+      if (!specMinimized && !spectrumPanelTransitioning) drawSpectrum();
+    });
+  }
+
+  specPanel.addEventListener('transitionrun', function(e){
+    if (e.target === specPanel && e.propertyName === 'height') spectrumPanelTransitioning = true;
+  });
+  specPanel.addEventListener('transitionend', function(e){
+    if (e.target === specPanel && e.propertyName === 'height') {
+      spectrumPanelTransitioning = false;
+      scheduleSpectrumDraw();
+    }
+  });
+  specPanel.addEventListener('transitioncancel', function(e){
+    if (e.target === specPanel && e.propertyName === 'height') {
+      spectrumPanelTransitioning = false;
+      scheduleSpectrumDraw();
+    }
+  });
+
+  if (typeof ResizeObserver !== 'undefined') {
+    spectrumResizeObserver = new ResizeObserver(function(){ scheduleSpectrumDraw(); });
+    spectrumResizeObserver.observe(specCanvas);
+  }
+
+  function drawSpectrum(){
+    if (specMinimized) return;
+    var ctx = getCtx();
+    if (!ctx || !specCanvas) return;
+    // Measure the rendered box after layout has been applied; offset dimensions
+    // can be stale when the panel is first expanded or a responsive layout shifts.
+    var rect = specCanvas.getBoundingClientRect();
+    var W = Math.round(rect.width), H = Math.round(rect.height);
+    if (W < 10 || H < 10) return;
+    if (specCanvas.width !== W) specCanvas.width = W;
+    if (specCanvas.height !== H) specCanvas.height = H;
+    ctx.clearRect(0,0,W,H);
+    if (!parsedPeaks){ ctx.fillStyle='#aaa'; ctx.font='14px sans-serif'; ctx.textAlign='center'; ctx.fillText('Run a search to see spectrum',W/2,H/2); return; }
+    if (parsedPeaks.dimension === '1D') draw1D(ctx, W, H, parsedPeaks.peaks);
+    else draw2D(ctx, W, H, parsedPeaks.peaks);
+  }
+
+  function nucLabel(nuc){
+    var map={'1H':'¹H','13C':'¹³C','19F':'¹⁹F','31P':'³¹P','11B':'¹¹B','29Si':'²⁹Si'};
+    return map[nuc]||nuc;
+  }
+
+  function draw1D(ctx, W, H, inputPeaks){
+    var PAD = {l:60, r:20, t:22, b:44};
+    var full = fullRange1D(inputPeaks);
+    if (!vp) vp = {x0: full.min, x1: full.max};
+    clampVp(full, null);
+    var rng = {min: vp.x0, max: vp.x1};
+    var plotW = W-PAD.l-PAD.r, plotH = H-PAD.t-PAD.b;
+    var tol = (lastResults&&lastResults.params&&lastResults.params.tol1)||0.03;
+    var nuc = (lastResults&&lastResults.params&&lastResults.params.nuc1)||'1H';
+
+    function xOf(ppm){ return PAD.l + (rng.max-ppm)/(rng.max-rng.min)*plotW; }
+
+    ctx.fillStyle='#fafafa'; ctx.fillRect(PAD.l,PAD.t,plotW,plotH);
+
+    // Tolerance bands
+    ctx.fillStyle='rgba(0,0,0,0.04)';
+    inputPeaks.forEach(function(p){
+      var pv=Array.isArray(p)?p[0]:p;
+      var x1=xOf(pv+tol), x2=xOf(pv-tol);
+      ctx.fillRect(Math.max(Math.min(x1,x2),PAD.l),PAD.t,Math.min(Math.abs(x2-x1),plotW),plotH);
+    });
+
+    // Overlay shifts
+    Object.values(overlayData).forEach(function(d){
+      if (!d.shifts1H||!d.shifts1H.length) return;
+      ctx.strokeStyle=d.color; ctx.lineWidth=1.5; ctx.globalAlpha=0.7;
+      d.shifts1H.forEach(function(ppm){
+        if (ppm<rng.min||ppm>rng.max) return;
+        var x=xOf(ppm);
+        ctx.beginPath(); ctx.moveTo(x,PAD.t+plotH*0.3); ctx.lineTo(x,PAD.t+plotH); ctx.stroke();
+        var matched=inputPeaks.some(function(p){var pv=Array.isArray(p)?p[0]:p;return Math.abs(pv-ppm)<=tol;});
+        if (matched){
+          ctx.globalAlpha=1; ctx.fillStyle=d.color;
+          ctx.beginPath(); ctx.arc(x,PAD.t+plotH-5,4,0,2*Math.PI); ctx.fill();
+          ctx.globalAlpha=0.7;
+        }
+      });
+    });
+    ctx.globalAlpha=1;
+
+    // Input peaks
+    ctx.strokeStyle='#111'; ctx.lineWidth=2;
+    inputPeaks.forEach(function(p){
+      var pv=Array.isArray(p)?p[0]:p;
+      if (pv<rng.min||pv>rng.max) return;
+      var x=xOf(pv);
+      ctx.beginPath(); ctx.moveTo(x,PAD.t); ctx.lineTo(x,PAD.t+plotH); ctx.stroke();
+      ctx.fillStyle='#111'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+      ctx.fillText(pv.toFixed(2),x,PAD.t-5);
+    });
+
+    // Zoom-rect overlay (zoom mode drag)
+    if (drag && drag.mode==='zoom'){
+      ctx.fillStyle='rgba(0,100,255,0.12)';
+      ctx.strokeStyle='rgba(0,100,255,0.5)'; ctx.lineWidth=1;
+      var rx=Math.min(drag.x0,drag.x1), rw=Math.abs(drag.x1-drag.x0);
+      ctx.fillRect(rx,PAD.t,rw,plotH);
+      ctx.strokeRect(rx,PAD.t,rw,plotH);
+    }
+
+    // Axes + ticks
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(PAD.l,PAD.t+plotH); ctx.lineTo(PAD.l+plotW,PAD.t+plotH); ctx.stroke();
+    var step=niceStep(rng.max-rng.min,8), start=Math.ceil(rng.min/step)*step;
+    ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+    for(var v=start; v<=rng.max+step*0.01; v+=step){
+      var xt=xOf(v);
+      if(xt<PAD.l||xt>PAD.l+plotW) continue;
+      ctx.beginPath(); ctx.moveTo(xt,PAD.t+plotH); ctx.lineTo(xt,PAD.t+plotH+4); ctx.stroke();
+      ctx.fillText(v.toFixed(2),xt,PAD.t+plotH+14);
+    }
+    ctx.fillStyle='#444'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(nucLabel(nuc)+' \u03b4 (ppm)', PAD.l+plotW/2, H-4);
+    ctx.fillStyle='#aaa'; ctx.font='9px sans-serif'; ctx.textAlign='right';
+    ctx.fillText('scroll=zoom  '+(specMode==='pan'?'drag=pan':'drag=zoom-rect')+'  dbl-click=reset', PAD.l+plotW, PAD.t-5);
+  }
+
+  function draw2D(ctx, W, H, inputPeaks){
+    var PAD = {l:64, r:20, t:22, b:44};
+    var tol1=(lastResults&&lastResults.params&&lastResults.params.tol1)||0.03;
+    var tol2=(lastResults&&lastResults.params&&lastResults.params.tol2)||0.3;
+    var nuc1v=(lastResults&&lastResults.params&&lastResults.params.nuc1)||'1H';
+    var nuc2v=(lastResults&&lastResults.params&&lastResults.params.nuc2)||'13C';
+    var full=fullRange2D(inputPeaks);
+    if (!vp) vp={x0:full.r1.min, x1:full.r1.max, y0:full.r2.min, y1:full.r2.max};
+    clampVp(full.r1, full.r2);
+    var r1={min:vp.x0,max:vp.x1}, r2={min:vp.y0,max:vp.y1};
+    var plotW=W-PAD.l-PAD.r, plotH=H-PAD.t-PAD.b;
+
+    function xOf(ppm){return PAD.l+(r1.max-ppm)/(r1.max-r1.min)*plotW;}
+    // Historical 2D NMR convention for the indirect (F1) axis: low ppm at top, high ppm at bottom.
+    function yOf(ppm){return PAD.t+(ppm-r2.min)/(r2.max-r2.min)*plotH;}
+
+    ctx.fillStyle='#fafafa'; ctx.fillRect(PAD.l,PAD.t,plotW,plotH);
+    ctx.save(); ctx.beginPath(); ctx.rect(PAD.l,PAD.t,plotW,plotH); ctx.clip();
+
+    Object.values(overlayData).forEach(function(d){
+      ctx.strokeStyle=d.color; ctx.lineWidth=1; ctx.globalAlpha=0.45;
+      // For 2D: nuc1 is direct (x-axis), nuc2 is indirect (y-axis)
+      // shifts1H holds direct-nucleus shifts, shiftsX holds indirect-nucleus shifts
+      (d.shifts1H||[]).forEach(function(ppm){
+        var x=xOf(ppm);
+        ctx.beginPath(); ctx.moveTo(x,PAD.t); ctx.lineTo(x,PAD.t+plotH); ctx.stroke();
+      });
+      (d.shiftsX||[]).forEach(function(ppm){
+        var y=yOf(ppm);
+        ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+plotW,y); ctx.stroke();
+      });
+      ctx.globalAlpha=1;
+      inputPeaks.forEach(function(p){
+        var mH=(d.shifts1H||[]).some(function(v){return Math.abs(v-p[0])<=tol1;});
+        var mX=(d.shiftsX||[]).some(function(v){return Math.abs(v-p[1])<=tol2;});
+        if(mH&&mX){
+          ctx.fillStyle=d.color;
+          ctx.beginPath(); ctx.arc(xOf(p[0]),yOf(p[1]),5,0,2*Math.PI); ctx.fill();
+        }
+      });
+    });
+
+    // Input peaks
+    ctx.fillStyle='#111';
+    inputPeaks.forEach(function(p){
+      ctx.beginPath(); ctx.arc(xOf(p[0]),yOf(p[1]),4,0,2*Math.PI); ctx.fill();
+    });
+
+    // Zoom-rect overlay
+    if (drag && drag.mode==='zoom'){
+      ctx.fillStyle='rgba(0,100,255,0.12)';
+      ctx.strokeStyle='rgba(0,100,255,0.5)'; ctx.lineWidth=1;
+      var rx=Math.min(drag.x0,drag.x1), ry=Math.min(drag.y0,drag.y1);
+      var rw=Math.abs(drag.x1-drag.x0), rh=Math.abs(drag.y1-drag.y0);
+      ctx.fillRect(rx,ry,rw,rh); ctx.strokeRect(rx,ry,rw,rh);
+    }
+    ctx.restore();
+
+    // Axes
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(PAD.l,PAD.t+plotH); ctx.lineTo(PAD.l+plotW,PAD.t+plotH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD.l,PAD.t); ctx.lineTo(PAD.l,PAD.t+plotH); ctx.stroke();
+
+    var stepX=niceStep(r1.max-r1.min,8), startX=Math.ceil(r1.min/stepX)*stepX;
+    ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+    for(var vx=startX;vx<=r1.max+stepX*0.01;vx+=stepX){
+      var xt=xOf(vx); if(xt<PAD.l||xt>PAD.l+plotW) continue;
+      ctx.beginPath(); ctx.moveTo(xt,PAD.t+plotH); ctx.lineTo(xt,PAD.t+plotH+4); ctx.stroke();
+      ctx.fillText(vx.toFixed(2),xt,PAD.t+plotH+14);
+    }
+    var stepY=niceStep(r2.max-r2.min,6), startY=Math.ceil(r2.min/stepY)*stepY;
+    ctx.textAlign='right';
+    for(var vy=startY;vy<=r2.max+stepY*0.01;vy+=stepY){
+      var yt=yOf(vy); if(yt<PAD.t||yt>PAD.t+plotH) continue;
+      ctx.beginPath(); ctx.moveTo(PAD.l,yt); ctx.lineTo(PAD.l-4,yt); ctx.stroke();
+      ctx.fillText(vy.toFixed(1),PAD.l-6,yt+3);
+    }
+    ctx.fillStyle='#444'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('F2 \u2013 '+nucLabel(nuc1v)+' (ppm)', PAD.l+plotW/2, H-4);
+    ctx.save(); ctx.translate(13,PAD.t+plotH/2); ctx.rotate(-Math.PI/2);
+    ctx.fillText('F1 \u2013 '+nucLabel(nuc2v)+' (ppm)',0,0); ctx.restore();
+    ctx.fillStyle='#aaa'; ctx.font='9px sans-serif'; ctx.textAlign='right';
+    ctx.fillText('scroll=zoom  '+(specMode==='pan'?'drag=pan':'drag=zoom-rect')+'  dbl-click=reset', PAD.l+plotW, PAD.t-5);
+  }
+
+  function niceStep(range,targetTicks){
+    if(!range||range<=0) return 1;
+    var rough=range/targetTicks, mag=Math.pow(10,Math.floor(Math.log10(rough))), norm=rough/mag;
+    if(norm<1.5) return mag; if(norm<3.5) return 2*mag; if(norm<7.5) return 5*mag; return 10*mag;
+  }
+
+  window.addEventListener('resize', scheduleSpectrumDraw);
+
+})();
+</script>
+
+</body>
+</html>
